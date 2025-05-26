@@ -225,6 +225,12 @@ init_table:
     strb r2, [r0, r1]
     strb r1, [r0, r2]
     
+    @ b <-> t
+    mov r1, #'b'
+    mov r2, #'t'
+    strb r2, [r0, r1]
+    strb r1, [r0, r2]
+    
     @ f <-> g
     mov r1, #'f'
     mov r2, #'g'
@@ -233,7 +239,7 @@ init_table:
     
     @ p <-> q
     mov r1, #'p'
-    mov r2, #'q'
+    mov r2, #'m'
     strb r2, [r0, r1]
     strb r1, [r0, r2]
     
