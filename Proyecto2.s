@@ -1,7 +1,7 @@
 .section .data
 prompt_input: .asciz "Ingrese 1 para consola, 2 para archivo: "
+prompt_file: .asciz "Ingrese el nombre del archivo: "
 prompt_lang: .asciz "¿Fuente en español (s) o malespín (m)? "
-input_file: .asciz "entrada.txt"
 output_file: .asciz "convertido.txt"
 error_msg: .asciz "Error al abrir archivo\n"
 output_msg: .asciz "\nTexto convertido: "
@@ -12,6 +12,9 @@ translation_table:
 .fill 256, 1, 0
 
 .section .bss
+.lcomm filename, 256
+.lcomm filecontent, 4096
+.lcomm fd, 4
 .lcomm buffer, 4096
 .lcomm output, 4096
 .lcomm total_letras, 4
@@ -28,7 +31,7 @@ _start:
     @ Solicitar modo de entrada
     mov r0, #1
     ldr r1, =prompt_input
-    mov r2, #34
+    mov r2, #41
     mov r7, #4
     swi 0
 
@@ -58,24 +61,51 @@ leer_consola:
     b procesar
 
 leer_archivo:
-    mov r0, #5
-    ldr r1, =input_file
-    mov r2, #0
-    mov r7, #5
+    @ Pedir nombre del archivo
+    mov r0, #1
+    ldr r1, =prompt_file
+    mov r2, #31
+    mov r7, #4
     swi 0
-    
+
+    mov r0, #0          @ stdin
+    ldr r1, =filename
+    mov r2, #256
+    mov r7, #3          @ sys_read
+    swi #0
+
+    @ Procesar nombre del archivo
     cmp r0, #0
-    blt error_archivo
-    
-    mov r3, r0          @ Guardar descriptor
-    mov r0, r3
+    ble error_archivo
+    sub r0, r0, #1
+    ldr r1, =filename
+    mov r2, #0
+    strb r2, [r1, r0]
+
+    @ Abrir archivo
+    ldr r0, =filename
+    mov r1, #0          @ 0_RDONLY
+    mov r7, #5          @ sys_open
+    swi #0
+
+    cmp r0, #-1
+    beq error_archivo
+
+
+    @ Leer contenido del archivo
+    mov r5, r0
     ldr r1, =buffer
     mov r2, #4096
-    mov r7, #3
+    mov r7, #3          @ sys_read
+    swi #0
+
+    mov r4, r0          @ Guardar longitud del texto leído
+    mov r12, #1         @ Marcar modo archivo
+    
+    mov r0, r5
+    mov r7, #6
     swi 0
     
-    mov r4, r0          @ Guardar longitud
-    mov r12, #2         @ Marcar modo archivo
     b procesar
 
 procesar:
@@ -172,18 +202,16 @@ mostrar_consola:
     b salir
 
 escribir_archivo:
-    mov r0, #5
     ldr r1, =output_file
     mov r2, #0x42
     mov r3, #0666
     mov r7, #5
     swi 0
 
-    cmp r0, #0
-    blt error_archivo
+    cmp r0, #-1
+    beq error_archivo
 
-    mov r3, r0          @ Guardar descriptor
-    mov r0, r3
+    mov r5, r0          @ Guardar descriptor
     ldr r1, =output
     mov r2, r4
     mov r7, #4
@@ -195,7 +223,7 @@ escribir_archivo:
 error_archivo:
     mov r0, #1
     ldr r1, =error_msg
-    mov r2, #20
+    mov r2, #23
     mov r7, #4
     swi 0
     b salir
