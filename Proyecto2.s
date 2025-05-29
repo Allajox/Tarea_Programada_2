@@ -14,7 +14,6 @@ translation_table:
 .section .bss
 .lcomm filename, 256
 .lcomm filecontent, 4096
-.lcomm fd, 4
 .lcomm buffer, 4096
 .lcomm output, 4096
 .lcomm total_letras, 4
@@ -100,7 +99,7 @@ leer_archivo:
     swi #0
 
     mov r4, r0          @ Guardar longitud del texto leído
-    mov r12, #1         @ Marcar modo archivo
+    mov r12, #2         @ Marcar modo archivo
     
     mov r0, r5
     mov r7, #6
@@ -202,10 +201,9 @@ mostrar_consola:
     b salir
 
 escribir_archivo:
-    ldr r1, =output_file
-    mov r2, #0x42
-    mov r3, #0666
-    mov r7, #5
+    mov r7, #8
+    ldr r0, =output_file
+    mov r1, #0777
     swi 0
 
     cmp r0, #-1
