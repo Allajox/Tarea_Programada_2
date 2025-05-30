@@ -1,0 +1,655 @@
+.data
+prompt_input:   .asciz "Ingrese el texto (máximo 80 caracteres):\n"
+prompt_input2: .asciz "Ingrese 1 para consola, 2 para archivo: "
+prompt_output:  .asciz "\nTexto convertido:\n"
+prompt_lang:    .asciz "¿Fuente en español (s) o gerigonza (g)?: "
+newline:        .asciz "\n"
+stats_msg:      .asciz "\nEstadísticas:\n==================\n     "
+letras_msg:     .asciz "\nTotal de letras ingresadas: "
+palabras_msg:   .asciz "\nTotal de palabras ingresadas: "
+conv_msg:       .asciz "\nPalabras convertidas: "
+mod_msg:        .asciz "\nLetras modificadas: "
+porc_msg:       .asciz "\nPorcentaje de modificación: "
+porc_sym:       .asciz "%\n==================\n"
+prompt_file:    .asciz "Ingrese el nombre del archivo: "
+output_file:    .asciz "convertido.txt"
+translation_filename: .asciz "Traduccion.txt"
+buffer:         .space 4096
+output:         .space 4096
+num_buffer:     .space 12    @ Buffer para convertir números a texto
+len_error_msg:  .asciz "\nError: El texto no puede exceder los 80 caracteres.\n"
+error_msg:      .asciz "Error al abrir archivo\n"
+
+.section .bss
+    .lcomm filename, 256
+
+.text
+.global _start
+
+_start:
+    bl leer_modo_lenguaje
+
+    @ Solicitar modo de entrada
+    mov r0, #1
+    ldr r1, =prompt_input2
+    mov r2, #41
+    mov r7, #4
+    swi 0
+
+    @ Leer selección
+    mov r0, #0
+    ldr r1, =buffer
+    mov r2, #2
+    mov r7, #3
+    swi 0
+
+    ldrb r0, [r1]
+    cmp r0, #'1'
+    beq modo_consola
+    cmp r0, #'2'
+    beq modo_archivo
+
+    b salir
+
+leer_modo_lenguaje:
+    mov r0, #1
+    ldr r1, =prompt_lang
+    mov r2, #45          @ Ajustamos la longitud del mensaje
+    mov r7, #4
+    swi 0
+
+    mov r0, #0
+    ldr r1, =buffer
+    mov r2, #2
+    mov r7, #3
+    swi 0
+
+    ldrb r0, [r1]
+    cmp r0, #'s'
+    moveq r10, #0      @ español a gerigonza
+    cmp r0, #'g'
+    moveq r10, #1      @ gerigonza a español
+    bx lr
+
+modo_consola:
+    @ ... existing code to print prompts and read input ...
+    bl leer_entrada
+    @ ... existing code: check for input_too_long, etc. ...
+
+    @ Contar letras y palabras ANTES de la conversión
+    ldr r0, =buffer
+    bl contar_letras
+    mov r5, r0 @ r5 = total_letters (from r0 of contar_letras)
+    mov r6, r1 @ r6 = total_words (from r1 of contar_letras)
+
+    @ Preparar para convertir
+    ldr r0, =buffer         @ Puntero al buffer de entrada para convertir
+    ldr r10, =output        @ Puntero al buffer de salida para convertir en r10
+    @ r9 ya tiene la opción de lenguaje (0 para Español a Jerigonza, 1 para Jerigonza a Español)
+    bl convertir
+    @ Después de convertir:
+    @ r0 (retornado por convertir) tiene el número de letras modificadas (contenido original de r8)
+    @ r11 (modificado dentro de convertir) tiene el número de "palabras cambiadas" o transformaciones.
+    mov r4, r0              @ r4 = letras modificadas (era r8 en convertir)
+    mov r7, r11             @ r7 = palabras cambiadas (era r11 en convertir)
+
+    bl imprimir_salida     @ Imprime a consola
+    @ Escribir traducción a "Traduccion.txt"
+    bl calcular_longitud_output @ Length of output string will be in r0
+    mov r2, r0              @ r2 = content_length
+    ldr r0, =translation_filename @ r0 = filename_addr
+    ldr r1, =output         @ r1 = content_addr
+    mov r3, #0644           @ r3 = permissions
+    bl escribir_archivo     @ Escribir a archivo
+    @ Optionally, check r0 from escribir_archivo for error
+
+    bl imprimir_estadisticas @ Imprime a consola
+    b salir
+
+leer_entrada:
+    mov r0, #1
+    ldr r1, =prompt_input
+    mov r2, #43         @ Length of prompt_input 
+    mov r7, #4          @ Syscall write
+    swi 0
+
+    mov r0, #0          @ File descriptor stdin
+    ldr r1, =buffer     @ Buffer address
+    mov r2, #80         @ Read AT MOST 80 bytes (buffer size)
+    mov r7, #3          @ Syscall read
+    swi 0               @ r0 now contains number of bytes read (max 80)
+
+    @ r0 holds the number of bytes read. Max value of r0 is 80.
+    @ If r0 is 80, we need to check if the 80th character IS NOT a newline.
+    @ If r0 < 80, it's fine (user typed less than 80 chars, possibly with a newline).
+
+    mov r4, r0          @ Save number of bytes read in r4
+
+    cmp r4, #80         @ Did we read exactly 80 bytes?
+    bne length_ok       @ If not 80 bytes, length is considered okay (it's less)
+
+    @ If we read exactly 80 bytes, check if the last one is a newline
+    ldr r1, =buffer
+    add r1, r1, #79     @ Point to buffer[79] (the 80th character)
+    ldrb r3, [r1]       @ Load the 80th character
+    cmp r3, #'\n'       @ Is it a newline?
+    beq length_ok       @ If 80th char is newline (79 chars + NL), it's OK
+    
+    @ If we read 80 bytes AND the last char is NOT a newline, then input was > 80
+    b input_too_long_strict
+
+modo_archivo:
+    @ Pedir nombre del archivo (input file)
+    mov r0, #1
+    ldr r1, =prompt_file
+    mov r2, #31         @ Length of "Ingrese el nombre del archivo: "
+    mov r7, #4          @ syscall write
+    swi 0
+
+    mov r0, #0          @ stdin
+    ldr r1, =filename   @ .bss section for filename
+    mov r2, #255        @ Max 255 chars for filename (leave 1 for null)
+    mov r7, #3          @ sys_read
+    swi #0              @ r0 = bytes read for filename
+
+    @ Procesar nombre del archivo
+    cmp r0, #1          @ Check if at least 1 char was read (e.g. not just Enter)
+    blt .Lmodo_archivo_filename_error @ If r0 <= 0 (error or empty)
+
+    @ r0 has bytes read including newline. To null terminate at char before newline:
+    @ e.g., if "file.txt\n" is read, r0 = 9.
+    @ We want filename[8] = null. So filename + (r0-1)
+    push {r0}           @ Save original r0 (bytes read including NL)
+    sub r0, r0, #1      @ Index for null terminator (length - 1)
+    ldr r1, =filename
+    mov r2, #0          @ Null
+    strb r2, [r1, r0]   @ Null-terminate: filename[bytes_read-1] = 0
+    pop {r0}            @ Restore original r0 (not strictly needed now, but good practice)
+
+    @ Abrir input archivo
+    ldr r0, =filename   @ Filename string address
+    mov r1, #0          @ Flags: O_RDONLY
+    mov r7, #5          @ syscall sys_open
+    swi #0              @ r0 = input file descriptor (fd_in) or error < 0
+
+    cmp r0, #0          @ Check if fd_in is negative (error)
+    blt .Lmodo_archivo_open_error
+    mov r5, r0          @ Save fd_in in r5
+
+    @ Leer contenido del input archivo
+    mov r0, r5          @ fd_in from r5
+    ldr r1, =buffer
+    mov r2, #4095       @ Max bytes to read into buffer (leave 1 for null)
+    mov r7, #3          @ syscall sys_read
+    swi #0              @ r0 = bytes read from input file, or error < 0
+
+    cmp r0, #0          @ Check if bytes read is negative (error)
+    blt .Lmodo_archivo_read_error @ r0 has error code if < 0
+    mov r4, r0          @ Save actual bytes read into r4 (for null termination of buffer)
+
+    @ Null-terminate el buffer principal
+    ldr r1, =buffer
+    add r1, r1, r4      @ r1 apunta a buffer + bytes_leídos (using r4)
+    mov r2, #0          @ Null
+    strb r2, [r1]       @ Guardar null
+
+    @ Cerrar input archivo
+    mov r0, r5          @ fd_in from r5
+    mov r7, #6          @ syscall sys_close
+    swi 0
+    @ Ignoring close error for input file for now
+
+    @ Ahora procesar el contenido en 'buffer'
+    @ Contar letras y palabras ANTES de la conversión
+    ldr r0, =buffer
+    bl contar_letras
+    mov r5, r0 @ r5 = total_letters
+    mov r6, r1 @ r6 = total_words
+
+    @ Preparar para convertir
+    ldr r0, =buffer         @ Puntero al buffer de entrada para convertir
+    ldr r10, =output        @ Puntero al buffer de salida para convertir en r10
+    @ r9 ya tiene la opción de lenguaje (0 para Español a Jerigonza, 1 para Jerigonza a Español)
+    bl convertir
+    @ Después de convertir:
+    @ r0 (retornado por convertir) tiene el número de letras modificadas
+    @ r11 (modificado dentro de convertir) tiene el número de "palabras cambiadas"
+    mov r4, r0              @ r4 = letras modificadas
+    mov r7, r11             @ r7 = palabras cambiadas
+    
+    @ Calcular longitud del texto traducido en 'output' una sola vez
+    bl calcular_longitud_output @ Length of output string will be in r0
+    mov r4, r0              @ Guardar la longitud del texto traducido en r4
+                            @ (r0, r1, r2, r3 serán usados para escribir_archivo)
+
+    @ 1. Escribir traducción a "convertido.txt" (o el nombre en output_file)
+    ldr r0, =output_file    @ r0 = filename_addr ("convertido.txt")
+    ldr r1, =output         @ r1 = content_addr
+    mov r2, r4              @ r2 = content_length (from saved r4)
+    mov r3, #0644           @ r3 = permissions
+    bl escribir_archivo     @ Escribir a archivo (returns status in r0)
+    
+    cmp r0, #-1             @ Check return from escribir_archivo
+    beq .Lmodo_archivo_write_error @ If -1, then writing "convertido.txt" failed
+
+    @ 2. Escribir LA MISMA traducción a "Traduccion.txt"
+    ldr r0, =translation_filename @ r0 = filename_addr ("Traduccion.txt")
+    ldr r1, =output             @ r1 = content_addr (mismo output buffer)
+    mov r2, r4                  @ r2 = content_length (misma longitud guardada en r4)
+    mov r3, #0644               @ r3 = permissions
+    bl escribir_archivo         @ Escribir a "Traduccion.txt"
+
+    cmp r0, #-1                 @ Check return from escribir_archivo para "Traduccion.txt"
+    beq .Lmodo_archivo_write_error2 @ Si -1, la escritura de "Traduccion.txt" falló
+                                    @ Podríamos tener un manejo de error diferente o el mismo.
+
+    bl imprimir_estadisticas @ Imprime a consola
+    b salir
+
+.Lmodo_archivo_filename_error:
+    ldr r1, =error_msg  @ Using your generic error_msg for now
+    mov r2, #23         @ Length of "Error al abrir archivo\n"
+    b .Lprint_generic_file_error_and_exit
+
+.Lmodo_archivo_open_error:
+    ldr r1, =error_msg
+    mov r2, #23        
+    b .Lprint_generic_file_error_and_exit
+
+.Lmodo_archivo_read_error:
+    @ Antes de salir, intentar cerrar el archivo de entrada si se abrió
+    mov r0, r5          @ fd_in (was saved in r5)
+    mov r7, #6          @ syscall sys_close
+    swi 0               @ Cerrar input file (ignore error on this close)
+    ldr r1, =error_msg
+    mov r2, #23        
+    b .Lprint_generic_file_error_and_exit
+
+.Lmodo_archivo_write_error: @ Error al escribir "convertido.txt"
+    @ escribir_archivo pudo haber impreso un mensaje o no.
+    @ Aquí podríamos imprimir un mensaje específico si quisiéramos.
+    @ "Error al escribir convertido.txt"
+    b salir @ Salir si el primer guardado falla.
+
+.Lmodo_archivo_write_error2: @ Error al escribir "Traduccion.txt"
+    @ "Error al escribir Traduccion.txt"
+    @ Incluso si este falla, el primero ("convertido.txt") pudo haber tenido éxito.
+    @ Continuamos a imprimir estadísticas y salir.
+    bl imprimir_estadisticas @ Aún así imprimir estadísticas si la segunda escritura falla.
+    b salir
+
+.Lprint_generic_file_error_and_exit:
+    mov r0, #1          @ stdout
+    @ r1 (error message address) and r2 (length) should be set by the calling label
+    mov r7, #4          @ syscall write
+    swi 0
+    b salir
+
+length_ok:
+    @ Null-terminate the string
+    ldr r1, =buffer     @ Get buffer base address again
+    add r1, r1, r4      @ r1 now points to buffer + bytes_read (r4 has original r0)
+                        @ If r0 was 80 and last char was \n, we null terminate after \n.
+                        @ If r0 was < 80, null terminate after last char.
+    mov r2, #0          @ Value to store (null terminator)
+    strb r2, [r1]       @ Store null terminator
+    bx lr
+
+input_too_long: @ General case if first swi r0 > 80 (not possible with current read r2=80)
+    @ This label is kept for the previous logic but might not be hit now.
+    b print_error_and_exit
+
+input_too_long_strict: @ Specifically for 80 chars read and no newline
+print_error_and_exit:
+    mov r0, #1
+    ldr r1, =len_error_msg
+    mov r2, #52         @ Length of error message
+    mov r7, #4          @ Syscall write
+    swi 0
+    b salir             @ Branch to exit the program
+
+contar_letras:
+    push {r4-r9, lr}    @ Preserve lr and registers we'll use (r5, r6, r9 internally, r0,r2 for logic)
+                        @ r0 is the input buffer pointer, passed as argument.
+    
+    mov r5, #0          @ r5: Contador de letras
+    mov r6, #0          @ r6: Contador de palabras
+    mov r9, #0          @ r9: Estado actual: 0 = fuera de palabra, 1 = dentro de palabra
+
+.Lcontar_loop:
+    ldrb r2, [r0], #1   @ Cargar byte (r2) del buffer (r0), e incrementar r0
+    cmp r2, #0          @ Fin de string?
+    beq .Lfin_conteo_final
+
+    @ Es un separador? (espacio, newline, tab)
+    cmp r2, #' '
+    beq .Lcontar_es_separador
+    cmp r2, #'
+'       @ Nueva línea
+    beq .Lcontar_es_separador
+    cmp r2, #'	'       @ Tabulación
+    beq .Lcontar_es_separador
+
+    @ No es separador, entonces es parte de una letra de una palabra
+    add r5, r5, #1      @ Incrementar contador de letras (r5)
+
+    cmp r9, #0          @ Estábamos previamente fuera de una palabra (r9 == 0)?
+    beq .Lcontar_inicio_palabra @ Si r9 era 0, esta letra inicia una nueva palabra.
+    b .Lcontar_loop     @ No, ya estábamos dentro de una palabra (r9 == 1), continuar.
+
+.Lcontar_es_separador:
+    mov r9, #0          @ Marcar que estamos fuera de una palabra (estado = 0)
+    b .Lcontar_loop
+
+.Lcontar_inicio_palabra:
+    mov r9, #1          @ Marcar que ahora estamos dentro de una palabra (estado = 1)
+    add r6, r6, #1      @ Incrementar contador de palabras (r6)
+    b .Lcontar_loop
+
+.Lfin_conteo_final:
+    mov r0, r5          @ Retornar total de letras en r0
+    mov r1, r6          @ Retornar total de palabras en r1
+    pop {r4-r9, lr}
+    bx lr
+
+convertir:
+    push {lr}
+    mov r1, r10 @ r10 contains output buffer address, move to r1 for output
+    mov r8, #0  @ Initialize counter for modified letters (r8)
+    mov r11, #0 @ Initialize counter for modified words (r11) - Assuming r11 is for modified words.
+
+procesar:
+    ldrb r2, [r0], #1   @ Load byte from input (r0) into r2, increment r0
+    cmp r2, #0          @ Check for null terminator
+    beq fin_conversion
+
+    @ Check if it's a letter to count words changed. This is tricky.
+    @ For now, we only increment changed words if a letter modification occurs.
+    @ A more robust word change detection might be needed if simple letter change isn't enough.
+
+    @ Check conversion direction
+    @ r9 should hold the language choice (0 for Spanish->Gerigonza, 1 for Gerigonza->Spanish)
+    cmp r9, #0
+    beq esp_a_geri      @ Branch if Spanish to Gerigonza
+
+    @ --- Gerigonza a Español section (if r9 != 0) ---
+    mov r4, r2          @ Save current char (potential first vowel)
+
+    @ Check standard lowercase vowels
+    cmp r4, #'a'; beq .L_geri_check_p_pattern
+    cmp r4, #'e'; beq .L_geri_check_p_pattern
+    cmp r4, #'i'; beq .L_geri_check_p_pattern
+    cmp r4, #'o'; beq .L_geri_check_p_pattern
+    cmp r4, #'u'; beq .L_geri_check_p_pattern
+
+    @ Check ISO-8859-1 lowercase accented vowels
+    cmp r4, #0xE1; beq .L_geri_check_p_pattern @ á
+    cmp r4, #0xE9; beq .L_geri_check_p_pattern @ é
+    cmp r4, #0xED; beq .L_geri_check_p_pattern @ í
+    cmp r4, #0xF3; beq .L_geri_check_p_pattern @ ó
+    cmp r4, #0xFA; beq .L_geri_check_p_pattern @ ú
+    cmp r4, #0xFC; beq .L_geri_check_p_pattern @ ü
+
+    @ Check for 'ñ' (treat as consonant, just copy)
+    cmp r4, #0xF1; bne .L_check_not_n_geri @ if not 'ñ', check other non-vowels
+    b .L_geri_copiar_normal_r2_and_procesar @ it is 'ñ', so copy and continue
+
+.L_check_not_n_geri:
+    @ If r2 (now in r4) is not a vowel we handle, and not 'ñ',
+    @ it's some other char (like 'p' itself, or other consonant). Just copy it.
+    b .L_geri_copiar_normal_r2_and_procesar
+
+.L_geri_check_p_pattern: @ r4 holds the potential first vowel (plain or accented)
+    ldrb r3, [r0]      @ Peek at next char from input -> r3
+    cmp r3, #'p'
+    bne .L_geri_copiar_normal_r2_and_procesar  @ If not 'p', then r4 was not start of pattern. Copy r4.
+
+    ldrb r5, [r0, #1]  @ Peek at char after 'p' from input -> r5 (potential second vowel)
+    cmp r5, r4         @ Compare char_after_p (r5) with first_vowel (r4)
+    bne .L_geri_copiar_normal_r2_and_procesar  @ Not same vowel, so not the pattern. Copy r4.
+
+    @ Pattern "vowel-p-same_vowel" found! (e.g. a-p-a or á-p-á)
+    strb r4, [r1], #1   @ Store the first vowel (r4) into output
+    add r0, r0, #2      @ Advance input pointer by 2 (skipping 'p' and the following vowel)
+    add r8, r8, #2      @ Increment 'letters modified' (we removed 'p' and a vowel)
+    add r11, r11, #1    @ A word was changed (assume one change per pattern found)
+    b procesar          @ Go to process next char from input
+
+.L_geri_copiar_normal_r2_and_procesar: @ r2 still holds the original char that started this check
+    strb r2, [r1], #1   @ Copy the char r2 to output
+    b procesar          @ Go to process next char from input
+    @ --- End of Gerigonza a Español section ---
+
+esp_a_geri: @ Spanish to Gerigonza section (if r9 == 0)
+    @ r2 contains the current character
+    strb r2, [r1], #1   @ Store the current character (r2) first
+
+    @ Check standard lowercase vowels
+    cmp r2, #'a'; beq .L_s2g_add_p_then_char_in_r2
+    cmp r2, #'e'; beq .L_s2g_add_p_then_char_in_r2
+    cmp r2, #'i'; beq .L_s2g_add_p_then_char_in_r2
+    cmp r2, #'o'; beq .L_s2g_add_p_then_char_in_r2
+    cmp r2, #'u'; beq .L_s2g_add_p_then_char_in_r2
+
+    @ Check ISO-8859-1 lowercase accented vowels
+    cmp r2, #0xE1; beq .L_s2g_add_p_then_char_in_r2 @ á
+    cmp r2, #0xE9; beq .L_s2g_add_p_then_char_in_r2 @ é
+    cmp r2, #0xED; beq .L_s2g_add_p_then_char_in_r2 @ í
+    cmp r2, #0xF3; beq .L_s2g_add_p_then_char_in_r2 @ ó
+    cmp r2, #0xFA; beq .L_s2g_add_p_then_char_in_r2 @ ú
+    cmp r2, #0xFC; beq .L_s2g_add_p_then_char_in_r2 @ ü
+
+    @ Check for 'ñ' (0xF1) - treat as consonant, do nothing extra
+    cmp r2, #0xF1; beq procesar @ ñ - already stored, just go to next char processing
+
+    @ If not any of the above vowels or 'ñ', it's a consonant or other char.
+    @ It has already been stored. Just loop.
+    b procesar
+
+.L_s2g_add_p_then_char_in_r2: @ Helper label: r2 contains the vowel (normal or accented)
+    mov r3, #'p'
+    strb r3, [r1], #1   @ Add 'p'
+    strb r2, [r1], #1   @ Add the vowel (r2) itself back (it was already stored once before vowel check)
+                        @ So this effectively means vowel -> vowel-p-vowel
+                        @ Correction: strb r2, [r1], #1 was already done at start of esp_a_geri
+                        @ So, we only need to add 'p' and the vowel again.
+    add r8, r8, #2      @ Increment count of modified letters by 2 ('p' + vowel)
+    add r11, r11, #1    @ A word was changed (assume one change per vowel transformed)
+    b procesar
+
+fin_conversion:
+    mov r3, #0          @ Null terminator for the output string
+    strb r3, [r1]       @ Store null terminator in output
+    mov r0, r8          @ Return total modified letters in r0 for stats (as per convention)
+                        @ r11 has modified words, can be passed back if needed or stored globally.
+    pop {pc}
+
+calcular_longitud_output: @ Calculates length of null-terminated string in 'output' buffer
+    push {r1-r3, lr}    @ r0 will hold the pointer, then length
+    ldr r0, =output     @ Pointer to the start of the output buffer
+    mov r1, #0          @ Length counter
+.Lcalc_len_loop:
+    ldrb r2, [r0], #1   @ Load byte from output buffer, advance pointer
+    cmp r2, #0          @ Check for null terminator
+    beq .Lcalc_len_done
+    add r1, r1, #1      @ Increment length
+    b .Lcalc_len_loop
+.Lcalc_len_done:
+    mov r0, r1          @ Return length in r0
+    pop {r1-r3, lr}
+    bx lr
+
+escribir_archivo: 
+    @ Args: r0=filename_addr, r1=content_addr, r2=content_length, r3=permissions
+    push {r4-r7, lr}
+
+    mov r4, r0          @ Save filename_addr from r0 into r4
+    mov r5, r1          @ Save content_addr from r1 into r5
+    mov r6, r2          @ Save content_length from r2 into r6
+    @ r3 (permissions) can be used directly or saved if r3 is needed
+
+    @ Syscall #8 (sys_creat)
+    mov r0, r4          @ 1st arg for creat: filename address
+    mov r1, r3          @ 2nd arg for creat: permissions
+    mov r7, #8          @ syscall sys_creat
+    swi 0               @ r0 = output file descriptor or error
+
+    cmp r0, #-1
+    beq .L_escribir_error @ Branch if creat failed
+
+    mov r3, r0          @ Save output file descriptor in r3 (was permissions)
+
+    @ Write the content
+    mov r0, r3          @ 1st arg for write: File descriptor
+    mov r1, r5          @ 2nd arg for write: content_addr (from saved r1)
+    mov r2, r6          @ 3rd arg for write: content_length (from saved r2)
+    mov r7, #4          @ syscall sys_write
+    swi 0
+    @ Optionally, check r0 for bytes written or error (<0)
+    cmp r0, #0
+    blt .L_escribir_close_anyway @ If write error, still try to close
+
+.L_escribir_close_anyway:
+    @ Close output file
+    mov r0, r3          @ File descriptor (from saved r0 after creat)
+    mov r7, #6          @ syscall sys_close
+    swi 0
+    @ Optionally, check for close errors
+
+    mov r0, #0          @ Return 0 for success
+    pop {r4-r7, lr}
+    bx lr
+
+.L_escribir_error:
+    @ Minimal error indication: return -1
+    @ A real error message to console could be printed here or by caller.
+    mov r0, #-1         @ Return -1 for error
+    pop {r4-r7, lr}
+    bx lr
+
+imprimir_salida:
+    mov r0, #1
+    ldr r1, =prompt_output
+    mov r2, #19
+    mov r7, #4
+    swi 0
+
+    mov r0, #1
+    ldr r1, =output
+    mov r2, #0
+
+calcular_longitud:
+    ldrb r3, [r1, r2]
+    cmp r3, #0
+    beq imprimir_texto
+    add r2, r2, #1
+    b calcular_longitud
+
+imprimir_texto:
+    mov r0, #1
+    ldr r1, =output
+    mov r7, #4
+    swi 0
+    bx lr
+
+imprimir_estadisticas:
+    push {r4-r7, lr}
+
+    @ Mensaje inicial de estadísticas
+    mov r0, #1
+    ldr r1, =stats_msg
+    mov r2, #34
+    mov r7, #4
+    swi 0
+
+    @ Total de letras
+    mov r0, #1
+    ldr r1, =letras_msg
+    mov r2, #28
+    mov r7, #4
+    swi 0
+    mov r0, r5
+    bl numero_a_ascii
+
+    @ Total de palabras
+    mov r0, #1
+    ldr r1, =palabras_msg
+    mov r2, #30             @ Nueva longitud para "Total de palabras ingresadas: "
+    mov r7, #4
+    swi 0
+    mov r0, r6          @ Total de palabras
+    bl numero_a_ascii
+
+    @ Palabras convertidas
+    mov r0, #1
+    ldr r1, =conv_msg
+    mov r2, #22
+    mov r7, #4
+    swi 0
+    mov r0, r11
+    bl numero_a_ascii
+
+    @ Letras modificadas
+    mov r0, #1
+    ldr r1, =mod_msg
+    mov r2, #20
+    mov r7, #4
+    swi 0
+    mov r0, r4
+    bl numero_a_ascii
+
+    @ Porcentaje
+    mov r0, #1
+    ldr r1, =porc_msg
+    mov r2, #29
+    mov r7, #4
+    swi 0
+
+    mov r0, #100
+    mul r0, r4, r0
+    udiv r0, r0, r5
+    bl numero_a_ascii
+
+    @ Símbolo de porcentaje y final
+    mov r0, #1
+    ldr r1, =porc_sym
+    mov r2, #20
+    mov r7, #4
+    swi 0
+
+    pop {r4-r7, lr}
+    bx lr
+
+numero_a_ascii:
+    push {r4-r7, lr}
+    
+    ldr r1, =num_buffer
+    add r1, r1, #11
+    mov r2, #0
+    strb r2, [r1]
+    mov r2, #10
+    mov r4, r1
+
+convert_loop:
+    sub r1, r1, #1
+    udiv r3, r0, r2
+    mul r5, r3, r2
+    sub r5, r0, r5
+    add r5, r5, #'0'
+    strb r5, [r1]
+    mov r0, r3
+    cmp r0, #0
+    bne convert_loop
+
+    mov r0, #1
+    mov r2, r4
+    sub r2, r2, r1
+    mov r7, #4
+    swi 0
+
+    pop {r4-r7, lr}
+    bx lr
+
+salir:
+    mov r7, #1
+    swi 0
