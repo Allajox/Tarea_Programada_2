@@ -67,7 +67,6 @@ leer_consola:
     bl contar_letras
     bl convertir
     bl imprimir_salida
-    bl imprimir_estadisticas
 
 leer_archivo:
     @ Pedir nombre del archivo
@@ -176,7 +175,7 @@ contar_letras:
     ldr r0, =buffer
     mov r5, #0          @ Contador de letras
     mov r6, #0          @ Contador de palabras
-    mov r9, #0          @ Estado de palabra
+    mov r9, #0          @ Estado de palabra (1 es palabra convertida, 0 no lo es)
 
 contar_loop:
     ldrb r2, [r0], #1
@@ -197,11 +196,10 @@ contar_loop:
 
 nueva_palabra:
     add r6, r6, #1      @ Incrementar contador de palabras
-    mov r9, #1          @ Marcamos que estamos en palabra
+    mov r9, #1          @ Marcar palabra
     b contar_loop
 
 es_separador:
-    mov r9, #1
     b contar_loop
 
 fin_conteo:
@@ -212,7 +210,7 @@ convertir:
     ldr r0, =buffer
     ldr r1, =output
     mov r8, #0          @ letras convertidas
-    mov r11, #0         @ palabras modificadas
+    mov r11, #1         @ palabras modificadas
 
 procesar:
     ldrb r2, [r0], #1
@@ -223,22 +221,15 @@ procesar:
     beq es_espacio
     cmp r2, #' '
     beq es_espacio
-    cmp r2, #9
+    cmp r2, #'\''
     beq es_espacio
     b en_palabra
 
 es_espacio:
-    strb r2, [r1], #1
-    cmp r9, #1
-    moveq r9, #0
-    addeq r11, r11, #1
     b procesar
 
 fin_conversion:
-    cmp r9, #1
-    addeq r11, r11, #1
     mov r2, #0
-    strb r2, [r1]
     bx lr
 
     @ ===============================================
@@ -258,9 +249,6 @@ mostrar_consola:
     mov r2, r4
     mov r7, #4
     swi 0
-
-    bl imprimir_estadisticas
-    b salir
 
 escribir_archivo:
     mov r7, #8
