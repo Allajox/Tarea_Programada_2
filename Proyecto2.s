@@ -4,6 +4,8 @@ prompt_file: .asciz "Ingrese el nombre del archivo: "
 prompt_lang: .asciz "¿Fuente en español (s) o malespín (m)? "
 output_file: .asciz "convertido.txt"
 error_msg: .asciz "Error al abrir archivo\n"
+error_longitud_msg: .asciz "Error: Palabra demasiado larga (máx 80 caracteres)\n"
+error_tamano: .asciz "Error: El archivo excede el tamaño máximo de 2KB\n"
 output_msg: .asciz "\nTexto convertido: "
 stats_msg:      .asciz "\nEstadísticas:\n==================\n     "
 letras_msg:     .asciz "\nTotal de letras ingresadas: "
@@ -21,7 +23,7 @@ translation_table:
 .section .bss
 .lcomm filename, 256
 .lcomm filecontent, 4096
-.lcomm buffer, 4096
+.lcomm buffer, 2048
 .lcomm output, 4096
 .lcomm total_letras, 4
 .lcomm total_palabras, 4
@@ -102,18 +104,37 @@ leer_archivo:
     @ Leer contenido del archivo
     mov r3, r0
     ldr r1, =buffer
-    mov r2, #4096
+    mov r2, #2048
     mov r7, #3          @ sys_read
     swi #0
 
     mov r4, r0          @ Guardar longitud del texto leído
+
+    cmp r4, #2048       @ Revisa el tamaño del archivo
+    blt archivo_ok      @ Si tiene menos de 2048 caracteres (2 KiB), continúa
+
+    @ Si no, muestra error de tamaño
+    mov r0, #1
+    ldr r1, =error_tamano
+    mov r2, #51
+    mov r7, #4
+    swi 0
+    
+    @ Cerrar archivo y salir
+    mov r0, r3
+    mov r7, #6
+    swi 0
+    b salir
+
+archivo_ok:
     mov r12, #2         @ Marcar modo archivo
     
     bl contar_letras
     bl convertir
     bl imprimir_estadisticas
 
-    mov r0, r3
+    @ Cerrar archivo
+    mov r0, r3          
     mov r7, #6
     swi 0
 
@@ -168,14 +189,13 @@ fin_procesamiento:
     beq mostrar_consola
     b escribir_archivo
 
-@ ===============================================
-@ ===============================================
 contar_letras:
-    push {lr}
+    push {r4, lr}
     ldr r0, =buffer
     mov r5, #0          @ Contador de letras
     mov r6, #0          @ Contador de palabras
     mov r9, #0          @ Estado de palabra (1 es palabra convertida, 0 no lo es)
+    mov r4, #0          @ Contador de letras en palabra actual
 
 contar_loop:
     ldrb r2, [r0], #1
@@ -189,6 +209,20 @@ contar_loop:
     cmp r2, #'\t'
     beq es_separador
     
+    add r4, r4, #1      @ Aumenta el contador de letras por palabra
+
+    cmp r4, #80         @ Compara la longitud de la palabra
+    ble longitud_ok     @ Si es menor a 80, el programa continúa
+
+    @ Si la palabra es demasiado larga, lanza error
+    mov r0, #1
+    ldr r1, =error_longitud_msg
+    mov r2, #52
+    mov r7, #4
+    swi 0
+    b salir
+
+longitud_ok:
     add r5, r5, #1
     cmp r9, #0
     beq nueva_palabra
@@ -200,10 +234,11 @@ nueva_palabra:
     b contar_loop
 
 es_separador:
+    mov r4, #0          @ resetear contador de letras por palabra
     b contar_loop
 
 fin_conteo:
-    pop {lr}
+    pop {r4, lr}
     bx lr
 
 convertir:
@@ -231,9 +266,6 @@ es_espacio:
 fin_conversion:
     mov r2, #0
     bx lr
-
-    @ ===============================================
-    @ ===============================================
 
 mostrar_consola:
     @ Mostrar mensaje de salida
